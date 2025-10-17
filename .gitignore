@@ -1,0 +1,22 @@
+# Virtual environment (managed by uv)
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# UV lock cache (keep uv.lock committed, ignore transient)
+.uv/
+
+# Secrets & local env (do not commit API keys)
+.env
+.env.*
+!.env.example
+
+# Local data & outputs
+.chroma/
+.chroma_test/
+output/
+
+# macOS
+.DS_Store

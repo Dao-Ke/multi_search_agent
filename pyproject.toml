@@ -1,0 +1,18 @@
+[project]
+name = "multi-search"
+version = "0.1.0"
+description = "RAG workflow with region filters across multi knowledge bases"
+readme = "readme.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "song" }]
+dependencies = [
+  "langchain>=0.3.0",
+  "python-dotenv>=1.0.0",
+  "chromadb>=0.5.0",
+  "dashscope>=1.19.0",
+]
+
+[tool.uv]
+# 开发依赖可放这里（现阶段保持最小化）
+dev-dependencies = []
