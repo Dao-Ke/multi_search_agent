@@ -50,11 +50,17 @@ print(json.dumps(summary, ensure_ascii=False, indent=2))
 - `--data-dir <路径>`：指定数据目录，默认 `data/`。
 - `--persist-dir <路径>`：指定 Chroma 持久化目录，默认 `.chroma`。
 
+## 嵌入器（严格模式）
+
+- 仅使用本地 Ollama 嵌入：`langchain_community.embeddings.OllamaEmbeddings`（默认模型 `nomic-embed-text:latest`）。
+- 初始化与查询共享同一嵌入模型，失败直接报错，不做任何回退。
+- 必须提前在本地 Ollama 中拉取嵌入模型（例如：`ollama pull nomic-embed-text:latest`）；脚本不会触发下载。
+
 ## 环境变量
 
 - `CHROMA_PERSIST_DIR`：覆盖持久化目录（默认 `.chroma`）。
-- `TEST_MODE`：设置为 `true/1` 时强制使用本地哈希嵌入，便于离线或测试。
-- `TONGYI_API_KEY` 或 `DASHSCOPE_API_KEY`：配置后且非 `TEST_MODE`，会启用通义嵌入。
+- `OLLAMA_BASE_URL`：本地 Ollama 服务地址（默认 `http://localhost:11434`）。
+- `OLLAMA_EMBED_MODEL`：嵌入模型名称（默认 `nomic-embed-text:latest`）。
 
 ## 日志与输出示例
 
@@ -77,10 +83,10 @@ Total chunks added: 18 | collection count: 18
   - `【中央】xxx` → `kb_type=core`，`province=中央`
   - `【省/市】xxx` → `kb_type=regional`，`province` 为括号内名称
   - 未匹配 → `kb_type=regional`，`province=未知`
-- 切片策略：`RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)`（当前不开放参数）。
+- 切片策略：`RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)`（由 `langchain-text-splitters` 提供）。
 
 ## 常见问题
 
 - 重新导入同一批数据建议使用 `reset=True`，避免重复写入或 ID 冲突（ID 为 `source_name::chunk_id`）。
-- 本地/离线环境下请设置 `TEST_MODE=true` 或不配置 API key，以使用哈希嵌入。
 - 自定义持久化目录请在 `.env` 中设置 `CHROMA_PERSIST_DIR`，或通过参数传入。
+- 嵌入为严格模式：请确保本地已拉取 `OLLAMA_EMBED_MODEL` 指定的模型（例如：`ollama pull nomic-embed-text:latest`），否则初始化会直接报错。

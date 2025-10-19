@@ -1,31 +1,36 @@
-import hashlib
-import math
-import random
-from typing import List
+import os
+from typing import Optional
+
+from langchain_core.embeddings import Embeddings
+from typing import Optional
+import os
+from urllib.parse import urlparse
+from langchain_ollama import OllamaEmbeddings
 
 
-class EmbeddingProvider:
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        raise NotImplementedError
+def _ensure_local_no_proxy(base_url: Optional[str]) -> None:
+    try:
+        url = base_url or os.getenv("OLLAMA_BASE_URL")
+        if not url:
+            return
+        p = urlparse(url)
+        host = p.hostname
+        if host in ("127.0.0.1", "localhost"):
+            existing = os.getenv("NO_PROXY") or os.getenv("no_proxy") or ""
+            parts = [s.strip() for s in existing.split(",") if s.strip()]
+            if host not in parts:
+                parts.append(host)
+            os.environ["NO_PROXY"] = ",".join(parts)
+    except Exception:
+        # 环境变量设置失败不影响主流程
+        pass
 
 
-class HashEmbedding(EmbeddingProvider):
-    """
-    Deterministic lightweight embedding for tests and offline use.
-    Generates fixed-size vectors from text hashes without external calls.
-    """
-
-    def __init__(self, dim: int = 384):
-        self.dim = dim
-
-    def _embed_one(self, text: str) -> List[float]:
-        h = hashlib.sha256(text.encode("utf-8")).digest()
-        seed = int.from_bytes(h[:8], "big")
-        rnd = random.Random(seed)
-        vec = [rnd.uniform(-1.0, 1.0) for _ in range(self.dim)]
-        # L2 normalize for stability
-        norm = math.sqrt(sum(x * x for x in vec)) or 1.0
-        return [x / norm for x in vec]
-
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        return [self._embed_one(t) for t in texts]
+def get_langchain_embeddings(model: Optional[str] = None, base_url: Optional[str] = None) -> Embeddings:
+    m = model or os.getenv("OLLAMA_EMBED_MODEL", "bge-m3:latest")
+    kwargs = {"model": m}
+    url = base_url or os.getenv("OLLAMA_BASE_URL")
+    if url:
+        kwargs["base_url"] = url
+        _ensure_local_no_proxy(url)
+    return OllamaEmbeddings(**kwargs)

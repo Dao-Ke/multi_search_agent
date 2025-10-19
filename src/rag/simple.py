@@ -3,11 +3,14 @@ import json
 from typing import Dict, List, Optional
 
 import os
+import time
 from dotenv import load_dotenv
-import chromadb
+
+from langchain_chroma import Chroma
 
 from src.config import CHROMA_PERSIST_DIR
-from src.data_init.initializer import select_embedder
+from src.llm.embeddings import get_langchain_embeddings
+from src.utils.log import setup_run_logging, log_info
 
 
 def simple_query(
@@ -15,41 +18,46 @@ def simple_query(
     top_k: int = 4,
     where: Optional[Dict] = None,
 ) -> List[Dict]:
-    """Query the knowledge_base collection and return top-k chunks.
+    """Query the knowledge_base collection via LangChain Chroma and return top-k chunks.
 
     Returns a list of items with: id, distance, text, kb_type, province, source_name, chunk_id.
     """
     load_dotenv()
 
     persist_dir = os.getenv("CHROMA_PERSIST_DIR", CHROMA_PERSIST_DIR)
-    client = chromadb.PersistentClient(path=persist_dir)
-    collection = client.get_or_create_collection("knowledge_base")
-
-    embedder = select_embedder()
-    query_emb = embedder.embed([question])
+    embeddings = get_langchain_embeddings()
+    vectorstore = Chroma(collection_name="knowledge_base", persist_directory=persist_dir, embedding_function=embeddings)
 
     where_arg = where if (where and len(where) > 0) else None
-    res = collection.query(
-        query_embeddings=query_emb,
-        n_results=top_k,
-        where=where_arg,
-        include=["documents", "metadatas", "distances"],
-    )
+
+    # Use embed_query and relevance scores per LangChain API recommendation
+    query_vec = embeddings.embed_query(question)
+
+    # Lightweight retry around vector search to handle transient failures
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            results = vectorstore.similarity_search_by_vector_with_relevance_scores(query_vec, k=top_k, filter=where_arg)
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(0.3 * (attempt + 1))
+                continue
+            else:
+                raise
 
     out: List[Dict] = []
-    docs = res.get("documents", [[]])[0]
-    metas = res.get("metadatas", [[]])[0]
-    dists = res.get("distances", [[]])[0]
-    for i in range(len(docs)):
-        md = metas[i] if i < len(metas) else {}
+    for doc, score in results:
+        md = doc.metadata or {}
         sid = None
         if md.get("source_name") is not None and md.get("chunk_id") is not None:
             sid = f"{md.get('source_name')}::{md.get('chunk_id')}"
         out.append(
             {
                 "id": sid,
-                "distance": dists[i] if i < len(dists) else None,
-                "text": docs[i],
+                "distance": score,
+                "text": doc.page_content,
                 "kb_type": md.get("kb_type"),
                 "province": md.get("province"),
                 "source_name": md.get("source_name"),
@@ -60,12 +68,15 @@ def simple_query(
 
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Simple RAG query over knowledge_base")
     parser.add_argument("--q", required=True, help="Question to query")
-    parser.add_argument("-k", "--top-k", type=int, default=2, help="Top-k results")
+    parser.add_argument("-k", "--top-k", type=int, default=3, help="Top-k results")
     parser.add_argument("--kb-type", choices=["core", "regional"], help="Filter by kb_type")
     parser.add_argument("--province", help="Filter by province")
     args = parser.parse_args()
+
+    log_path = setup_run_logging(label=args.q, run_type="q")
 
     where: Dict = {}
     if args.kb_type:
@@ -74,7 +85,8 @@ def main():
         where["province"] = args.province
 
     results = simple_query(args.q, top_k=args.top_k, where=where or None)
-    print(json.dumps(results, ensure_ascii=False, indent=2))
+    log_info(json.dumps(results, ensure_ascii=False, indent=2))
+    print(f"查询完成，详情见日志：{log_path}")
 
 
 if __name__ == "__main__":

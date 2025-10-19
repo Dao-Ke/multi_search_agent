@@ -3,19 +3,18 @@
 本文档说明项目的主流程：从用户问题解析地域、省份，动态构建分组过滤器，按组触发多次检索，并由 LLM 汇总输出。
 
 ## 模块与入口
-- 模块：`src/pipeline/core.py`
-- 方法：`partition_query(question: str, top_k_per_group: int = 3, province_override: Optional[str] = None, llm_model: str = "qwen3-1.7b") -> Dict`
-- 命令行：`python -m src.pipeline.core --q "你的问题" -k 3 [--province 省份] [--model qwen3-1.7b]`
+- 模块：`src/pipeline/chain.py`
+- 方法：`build_app_chain() -> Runnable`
+- 命令行：`python src/app.py --q "你的问题" -k 3 [--province 省份]`
+
 
 ## 主流程
 1. 地域解析：`src.geo.region.extract_province(question)`，得到省份或 `None`。
-2. 构建过滤器：`src.rag.partition.build_partition_filters(province)`。
+2. 构建过滤器：`src.rag.partition.build_partition_filters_precise(province)`。
    - 有省份 → 三组：`core`、`target_region`、`other_regions`（第三组结果排除该省份）。
    - 无省份 → 两组：`core`、`others`。
 3. 分组检索：分别调用 `src.rag.simple.simple_query(question, top_k, where)` 获取每组 top-k 切片。
-4. LLM 汇总：使用 DashScope 的 Qwen（默认 `qwen3-1.7b`）对多组检索结果进行汇总。
-   - 无 `DASHSCOPE_API_KEY/TONGYI_API_KEY` 时降级为规则型摘要，返回检索要点拼接。
-   - 非流式调用默认关闭思维链参数（`enable_thinking=False`）。
+4. LLM 汇总：使用本地 Ollama 的 Qwen（默认 `qwen3:0.6b`，`format="json"`，`temperature=0`）对多组检索结果进行汇总；无法解析为结构化 JSON 时自动降级为规则型摘要并补齐分组要点。
 
 ## 输出格式要求
 - 总结：1–2段概括关键结论，避免凭空信息。
@@ -31,15 +30,10 @@
 {
   "question": "...",
   "province": "四川" | null,
-  "groups": [
-    {"name": "core", "where": {"kb_type": "core"}, "results": [...]},
-    {"name": "target_region", "where": {"province": "四川"}, "results": [...]},
-    {"name": "other_regions", "where": {"kb_type": "regional"}, "results": [...]}  // 若有省份
-  ],
   "summary": "LLM 汇总文本或降级摘要",
   "references": [
     {"name": "core", "items": ["【中央】xxx-0", "【中央】xxx-1"]},
-    {"name": "target_region", "items": ["【四川】深化政采制度改革-0"]},
+    {"name": "target_region", "items": ["【四川】深化政采制度-0"]},
     {"name": "other_regions", "items": ["【云南】优化采购流程-2"]}
   ]
 }
@@ -48,28 +42,14 @@
 ## 使用示例
 ```
 source .venv/bin/activate && \
-python -m src.pipeline.core --q "政府采购支持教育高质量发展的举措在四川有哪些？" -k 3
+python src/app.py --q "政府采购支持教育高质量发展的举措在四川有哪些？" --out output/sichuan_edu.md -k 3
 ```
 - 若需覆盖省份：`--province 四川`
-- 若环境已有 `DASHSCOPE_API_KEY`：将调用 Qwen 进行总结；否则使用降级摘要。
-
-## App 集成：导出 Markdown
-
-入口：`src/app.py`，可将问题、清洗后的总结与分组引用写入 Markdown。
-
-示例：
-```
-source .venv/bin/activate && \
-python src/app.py --q "四川在教育高质量发展方面的政府采购举措有哪些？" --out output/sichuan_edu.md --top-k 3
-```
-
-说明：
-- `.env` 推荐设置 `DASHSCOPE_API_KEY`（或 `TONGYI_API_KEY`）以启用 LLM；未设置时自动降级为规则型摘要。
-- 写入时会自动提取摘要的 JSON `content` 字段，避免在 Markdown 中出现整段 JSON。
+- `.env` 可选设置：`OLLAMA_BASE_URL`（如 `http://localhost:11434`）。本地未启动或未拉取模型时自动降级为规则型摘要。
 
 ## 环境配置
-- `.env` 中可配置 `DASHSCOPE_API_KEY` 或 `TONGYI_API_KEY`。
-- 模型名可通过 `--model` 指定，默认 `qwen3-1.7b`。
+- `.env` 中可配置 `CHROMA_PERSIST_DIR`（默认 `.chroma`）。
+- `.env` 可选配置：`OLLAMA_BASE_URL`（如 `http://localhost:11434`），并确保已本地拉取所需模型（例如：`ollama pull qwen3:0.6b`）。
 
 ## 设计说明
 - 过滤器第三组不直接做“取反”是因为 Chroma where 不支持逻辑取反；采用结果后置排除实现“其他地域”。

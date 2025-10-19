@@ -1,10 +1,10 @@
 以langchain为底座的多知识库搜索工具
 
 # 技术栈
-底座：langchain
+底座：langchain / langchain-ollama / langchain-text-splitters / langchain-chroma
 向量数据库：chroma
-llm：Tongyi
-embedding模型：Tongyi
+llm：Ollama（本地，qwen3:0.6b，JSON输出，temperature=0）
+embedding模型：Ollama（bge-m3:latest）
 
 # 核心逻辑
 查询多个知识库，有一个核心知识库，其他为地域所属知识库，地域知识库的元数据中有省份信息。
@@ -25,17 +25,18 @@ embedding模型：Tongyi
 
 - 环境准备：
   - 使用 uv：`uv venv && source .venv/bin/activate && uv pip install -e .`（或 `uv sync`）。
-  - 使用 pip：`python -m venv .venv && source .venv/bin/activate && pip install chromadb dashscope python-dotenv langchain`。
+  - 使用 pip：`python -m venv .venv && source .venv/bin/activate && pip install chromadb python-dotenv langchain langchain-community langchain-text-splitters langchain-ollama langchain-chroma ollama`。
 - 初始化数据：
   - `python -m src.data_init.cli --reset --verbose`（可选 `--data-dir`、`--persist-dir`）。
 - 运行查询并导出 Markdown：
-  - `python src/app.py --q "四川在教育高质量发展方面的政府采购举措有哪些？" --out output/sichuan_edu.md --top-k 3`。
-  - 可选：`--province 省份名`、`--model qwen3-1.7b`。
+  - `python src/app.py --q "四川在提高政府采购效率有哪些措施？" --out output/result.md --top-k 3`。
+  - 可选：`--province 省份名`。
 - 环境变量：
-  - `.env` 中配置 `DASHSCOPE_API_KEY` 或 `TONGYI_API_KEY` 以启用 LLM；未配置时自动降级为规则型摘要。
-  - `CHROMA_PERSIST_DIR`（默认 `.chroma`）、`TEST_MODE=true` 使用本地哈希嵌入。
+  - `.env` 可选配置：`OLLAMA_BASE_URL`（如 `http://localhost:11434`）、`OLLAMA_EMBED_MODEL`（默认 `bge-m3:latest`）。
+  - `CHROMA_PERSIST_DIR`（默认 `.chroma`）。
+  - 请确保已在本地 Ollama 中拉取嵌入与 LLM 模型（例如：`ollama pull bge-m3:latest`、`ollama pull qwen3:0.6b`），脚本不会触发下载。
 - 输出说明：
-  - 生成的 Markdown 包含：问题、清洗后的总结（自动提取 JSON 的 `content` 字段）与分组引用；引用项按组展示并采用“文件名-切片id”格式（如 `【四川】深化政采制度改革-0`）。
+  - 生成的 Markdown 包含：问题、清洗后的总结（使用 JSON 的 `summary` 字段）与分组引用；引用项按组展示并采用“文件名-切片id”格式（如 `【四川】深化政采制度-0`）。
 
 
 # 案例材料

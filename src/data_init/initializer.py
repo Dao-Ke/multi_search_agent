@@ -1,14 +1,17 @@
 import os
+import shutil
+import json
 from typing import Dict, List, Tuple
 
-import chromadb
-from chromadb import PersistentClient
+from langchain_chroma import Chroma
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from src.config import DATA_DIR, CHROMA_PERSIST_DIR
-from src.llm.embeddings import HashEmbedding
-from src.llm.tongyi import TongyiEmbedding
+from src.llm.embeddings import get_langchain_embeddings
+import logging
+
+logger = logging.getLogger("multi_search")
 
 
 def parse_kb_metadata(filename: str) -> Tuple[str, str]:
@@ -44,45 +47,50 @@ def read_all_files(data_dir: str) -> List[Dict]:
     return items
 
 
-def split_items(items: List[Dict], chunk_size: int = 1000, chunk_overlap: int = 100) -> List[Dict]:
+def split_items(items: List[Dict], chunk_size: int = 400, chunk_overlap: int = 40) -> List[Dict]:
     splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     chunks: List[Dict] = []
     for item in items:
         texts = splitter.split_text(item["text"]) if item["text"] else []
         for idx, t in enumerate(texts):
+            if not (t or "").strip():
+                continue
             md = dict(item["metadata"])  # shallow copy
             md["chunk_id"] = idx
             chunks.append({"text": t, "metadata": md})
     return chunks
 
 
-def get_client(persist_dir: str) -> PersistentClient:
-    os.makedirs(persist_dir, exist_ok=True)
-    return chromadb.PersistentClient(path=persist_dir)
-
-
-def get_or_create_collection(client: PersistentClient, name: str = "knowledge_base"):
-    return client.get_or_create_collection(name=name)
-
-
 def select_embedder():
-    # Prefer Tongyi if API key is configured and not in test mode
-    api_key = os.getenv("TONGYI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-    test_mode = os.getenv("TEST_MODE", "0") in ("1", "true", "True")
-    if api_key and not test_mode:
-        return TongyiEmbedding(api_key=api_key)
-    return HashEmbedding()
+    return get_langchain_embeddings()
 
 
-def add_chunks(collection, chunks: List[Dict]):
-    texts = [c["text"] for c in chunks]
-    metadatas = [c["metadata"] for c in chunks]
-    ids = [f"{m['source_name']}::{m['chunk_id']}" for m in metadatas]
+def get_vectorstore(persist_dir: str, name: str = "knowledge_base"):
+    os.makedirs(persist_dir, exist_ok=True)
+    embeddings = select_embedder()
+    return Chroma(collection_name=name, persist_directory=persist_dir, embedding_function=embeddings)
 
-    embedder = select_embedder()
-    embeddings = embedder.embed(texts)
 
-    collection.add(documents=texts, metadatas=metadatas, ids=ids, embeddings=embeddings)
+def add_chunks(vectorstore, chunks: List[Dict]):
+    import time
+    for c in chunks:
+        text = c["text"]
+        md = c["metadata"]
+        idv = f"{md['source_name']}::{md['chunk_id']}"
+        logger.info(f"Adding to vectorstore: {idv} len={len(text)}")
+        last_err = None
+        for attempt in range(3):
+            try:
+                vectorstore.add_texts(texts=[text], metadatas=[md], ids=[idv])
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.4 * (attempt + 1))
+                    continue
+                else:
+                    logger.warning(f"Failed to add chunk {idv} after retries: {e}. Skipping.")
+        time.sleep(0.2)
 
 
 def init_vector_db(
@@ -91,32 +99,24 @@ def init_vector_db(
     reset: bool = False,
     verbose: bool = False,
 ) -> Dict:
-    # Allow None overrides from CLI to fall back to config defaults
     data_dir = data_dir or DATA_DIR
     persist_dir = persist_dir or CHROMA_PERSIST_DIR
 
-    client = get_client(persist_dir)
-    if reset:
-        # Drop and recreate collection for a clean state
-        try:
-            client.delete_collection("knowledge_base")
-        except Exception:
-            pass
-    collection = get_or_create_collection(client, name="knowledge_base")
+    if reset and os.path.exists(persist_dir):
+        shutil.rmtree(persist_dir)
+
+    vectorstore = get_vectorstore(persist_dir, name="knowledge_base")
 
     items = read_all_files(data_dir)
     chunks = split_items(items)
     if chunks:
-        add_chunks(collection, chunks)
+        add_chunks(vectorstore, chunks)
 
-    # Build summary
-    total = collection.count()
+    total = len(chunks)
     by_kb: Dict[str, int] = {}
     for kb_type in ("core", "regional"):
-        res = collection.get(where={"kb_type": kb_type})
-        by_kb[kb_type] = len(res.get("ids", []))
+        by_kb[kb_type] = sum(1 for c in chunks if c["metadata"].get("kb_type") == kb_type)
 
-    # Per-file chunk counts for visibility
     file_chunk_counts: Dict[str, int] = {}
     file_meta: Dict[str, Dict] = {}
     for c in chunks:
@@ -128,19 +128,40 @@ def init_vector_db(
                 "province": c["metadata"].get("province"),
             }
 
-    # Detect skipped empty files for diagnostics
+    # 写入地域注册信息（仅regional，排除未知）到持久化目录
+    provinces_present = sorted(
+        {
+            m.get("province")
+            for m in file_meta.values()
+            if m.get("kb_type") == "regional" and m.get("province") and m.get("province") != "未知"
+        }
+    )
+    kb_types_present = sorted({m.get("kb_type") for m in file_meta.values() if m.get("kb_type")})
+    registry = {
+        "provinces": provinces_present,
+        "kb_types": kb_types_present,
+        "total_chunks": total,
+    }
+    try:
+        os.makedirs(persist_dir, exist_ok=True)
+        with open(os.path.join(persist_dir, "kb_registry.json"), "w", encoding="utf-8") as f:
+            json.dump(registry, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        if verbose:
+            logger.warning(f"Warn: failed to write kb_registry.json: {e}")
+
     skipped_empty = [i["metadata"]["source_name"] for i in items if not (i["text"] or "").strip()]
 
     if verbose:
-        print(f"Chroma collection: knowledge_base | persist_dir: {persist_dir}")
+        logger.info(f"Chroma collection: knowledge_base | persist_dir: {persist_dir}")
         for name, cnt in sorted(file_chunk_counts.items()):
             meta = file_meta.get(name, {})
-            print(
+            logger.info(
                 f"Inserted: {name} [kb_type={meta.get('kb_type')}, province={meta.get('province')}] chunks={cnt}"
             )
         for name in sorted(skipped_empty):
-            print(f"Skipped empty: {name}")
-        print(f"Total chunks added: {sum(file_chunk_counts.values())} | collection count: {total}")
+            logger.info(f"Skipped empty: {name}")
+        logger.info(f"Total chunks added: {sum(file_chunk_counts.values())} | collection count: {total}")
 
     processed_files = sorted({c["metadata"]["source_name"] for c in chunks})
     return {
@@ -151,4 +172,5 @@ def init_vector_db(
         "by_kb_type": by_kb,
         "file_chunk_counts": file_chunk_counts,
         "skipped_empty_files": skipped_empty,
+        "registry_path": os.path.join(persist_dir, "kb_registry.json"),
     }

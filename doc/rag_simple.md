@@ -7,15 +7,16 @@
 - 模块：`src/rag/simple.py`
 - 方法：`simple_query(question: str, top_k: int = 4, where: Optional[Dict] = None) -> List[Dict]`
 - 返回字段：`text`、`source_name`、`kb_type`、`province`、`chunk_id`、`distance`、`id`
-- 嵌入器选择：自动根据环境变量选择通义或本地哈希嵌入（与数据初始化一致）
+- 嵌入器（严格模式）：仅使用本地 Ollama 嵌入（`langchain_community.embeddings.OllamaEmbeddings`）。初始化与查询共享同一模型，失败直接报错，不做回退。
 
 ## 前置条件
 
 - 请先完成数据初始化，参考 `doc/data_init.md`，确保 `knowledge_base` 集合已建立并有数据。
 - `.env` 中可配置：
   - `CHROMA_PERSIST_DIR`（默认 `.chroma`）
-  - `TEST_MODE`（`true/1` 时使用本地哈希嵌入）
-  - `TONGYI_API_KEY` 或 `DASHSCOPE_API_KEY`（启用通义嵌入）
+  - `OLLAMA_BASE_URL`（如 `http://localhost:11434`）
+  - `OLLAMA_EMBED_MODEL`（默认 `nomic-embed-text:latest`）
+  - 请确保已在本地 Ollama 中拉取嵌入模型（例如：`ollama pull nomic-embed-text:latest`），脚本不会触发下载。
 
 ## 命令行使用
 
